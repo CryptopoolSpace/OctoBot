@@ -14,17 +14,19 @@
 #  You should have received a copy of the GNU Lesser General Public
 #  License along with this library.
 
-import copy
+from copy import deepcopy
 
+from octobot_backtesting.api.backtesting import create_independent_backtesting, \
+    initialize_and_run_independent_backtesting, get_independent_backtesting_exchange_manager_ids, \
+    join_independent_backtesting
 from octobot_commons.logging.logging_util import get_logger
-from backtesting.abstract_backtesting_test import AbstractBacktestingTest, SYMBOLS, DATA_FILES, DATA_FILE_PATH
-from config import CONFIG_TRADER_RISK, CONFIG_TRADING, CONFIG_FORCED_EVALUATOR, CONFIG_FORCED_TIME_FRAME, \
-    CONFIG_BACKTESTING, CONFIG_BACKTESTING_DATA_FILES, CONFIG_CRYPTO_CURRENCIES, CONFIG_CRYPTO_PAIRS
-from octobot_trading.exchanges import NoCandleDataForThisTimeFrameException
+from backtesting.abstract_backtesting_test import AbstractBacktestingTest
+from octobot_trading.api.exchange import get_exchange_managers_from_exchange_ids
+from octobot_trading.api.profitability import get_profitability_stats
+from octobot_trading.api.trades import get_trade_history
+from octobot_trading.constants import CONFIG_TRADER_RISK, CONFIG_TRADING
+from octobot_evaluators.constants import CONFIG_FORCED_EVALUATOR, CONFIG_FORCED_TIME_FRAME
 from backtesting.strategy_optimizer.test_suite_result import TestSuiteResult
-from backtesting.backtesting_util import create_backtesting_bot, start_backtesting_bot, filter_wanted_symbols
-from backtesting.collector.data_file_manager import interpret_file_name, DATA_FILE_EXT
-from services.web_service import WebService
 
 
 class StrategyTestSuite(AbstractBacktestingTest):
@@ -64,8 +66,8 @@ class StrategyTestSuite(AbstractBacktestingTest):
             try:
                 await test(strategy_tester)
                 self.current_progress = int((i+1)/nb_tests*100)
-            except NoCandleDataForThisTimeFrameException:
-                pass
+            # except NoCandleDataForThisTimeFrameException:
+            #     pass
             except Exception as e:
                 print(f"Exception when running test {test.__name__}: {e}")
                 self.logger.exception(e)
@@ -102,30 +104,23 @@ class StrategyTestSuite(AbstractBacktestingTest):
     async def test_up_then_down(strategy_tester):
         await strategy_tester.run_test_up_then_down(None, StrategyTestSuite.SKIP_LONG_STEPS)
 
-    def _assert_results(self, run_results, profitability, bot):
-        self._profitability_results.append(run_results)
-        trader = next(iter(bot.get_exchange_trader_simulators().values()))
-        self._trades_counts.append(len(trader.get_trades_manager().get_trade_history()))
+    def _handle_results(self, independent_backtesting, profitability):
+        trades_count = 0
+        profitability_result = None
+        exchange_manager_ids = get_independent_backtesting_exchange_manager_ids(independent_backtesting)
+        for exchange_manager in get_exchange_managers_from_exchange_ids(exchange_manager_ids):
+            _, profitability, _, market_average_profitability, _ = get_profitability_stats(exchange_manager)
+            # Only one exchange manager per run
+            profitability_result = (profitability, market_average_profitability)
+            trades_count += len(get_trade_history(exchange_manager))
+        if profitability_result is None:
+            raise RuntimeError("Error with independent backtesting: no available exchange manager")
+        self._profitability_results.append(profitability_result)
+        self._trades_counts.append(trades_count)
 
-    async def _run_backtesting_with_current_config(self, symbol, data_file_to_use=None):
-        config_to_use = copy.deepcopy(self.config)
-        config_to_use[CONFIG_BACKTESTING][CONFIG_BACKTESTING_DATA_FILES] = copy.copy(DATA_FILES)
-        # remove unused symbols
-        symbols = {}
-        for currency, details in copy.deepcopy(SYMBOLS).items():
-            if symbol in details[CONFIG_CRYPTO_PAIRS]:
-                symbols[currency] = details
-        config_to_use[CONFIG_CRYPTO_CURRENCIES] = symbols
-        if data_file_to_use is not None:
-            for index, datafile in enumerate(DATA_FILES):
-                _, file_symbol, _, _ = interpret_file_name(datafile)
-                if symbol == file_symbol:
-                    config_to_use[CONFIG_BACKTESTING][CONFIG_BACKTESTING_DATA_FILES][index] = \
-                        DATA_FILE_PATH + data_file_to_use + DATA_FILE_EXT
-
-        # do not activate web interface on standalone backtesting bot
-        WebService.enable(config_to_use, False)
-        filter_wanted_symbols(config_to_use, [symbol])
-        bot = create_backtesting_bot(config_to_use)
-        # debug set to False to improve performances
-        return await start_backtesting_bot(bot), bot
+    async def _run_backtesting_with_current_config(self, data_file_to_use):
+        config_to_use = deepcopy(self.config)
+        independent_backtesting = create_independent_backtesting(config_to_use, [data_file_to_use], "")
+        await initialize_and_run_independent_backtesting(independent_backtesting)
+        await join_independent_backtesting(independent_backtesting)
+        return independent_backtesting

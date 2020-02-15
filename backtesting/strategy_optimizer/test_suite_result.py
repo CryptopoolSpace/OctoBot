@@ -16,8 +16,8 @@
 
 import copy
 
-from octobot_commons.time_frame_manager import TimeFrameManager
-from tools.data_util import DataUtil
+from octobot_commons.data_util import mean
+from octobot_commons.time_frame_manager import find_min_time_frame
 
 
 class TestSuiteResult:
@@ -37,7 +37,7 @@ class TestSuiteResult:
         self.trades_counts = trades_counts
         self.risk = risk
         self.time_frames = time_frames
-        self.min_time_frame = TimeFrameManager.find_min_time_frame(self.time_frames)
+        self.min_time_frame = find_min_time_frame(self.time_frames)
         self.evaluators = evaluators
         self.strategy = strategy
 
@@ -45,10 +45,10 @@ class TestSuiteResult:
         bot_profitabilities = [
             profitability_result[self.BOT_PROFITABILITY] - profitability_result[self.MARKET_PROFITABILITY]
             for profitability_result in self.run_profitabilities]
-        return DataUtil.mean(bot_profitabilities)
+        return mean(bot_profitabilities)
 
     def get_average_trades_count(self):
-        return DataUtil.mean(self.trades_counts)
+        return mean(self.trades_counts)
 
     def get_evaluators_without_strategy(self):
         evals = copy.copy(self.evaluators)
